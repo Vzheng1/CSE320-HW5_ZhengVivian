@@ -1,6 +1,9 @@
 #include "protocol.h"
 #include "debug.h"
 
+#include <string.h>
+#include <arpa/inet.h>
+
 int protocol_serialize_welcome(uint8_t *buf, size_t buf_len, int player_id, int board_size, int max_players) {
 	// invalid pointer, buffer size too small, 
 	if(!buf || buf_len < 4 || max_players < MAX_PLAYERS_MIN || max_players > MAX_PLAYERS_MAX || 
@@ -25,7 +28,72 @@ int protocol_serialize_game_state(uint8_t *buf, size_t buf_len, const game_board
 	if(!buf || !board || buf_len < 6) {
 		return -1;
 	}
-	return 0;
+
+	// 0 = type 0x30
+	// 1 = number snakes alive
+	// 2 = apple X position
+	// 4 = apple Y position
+	// 6 = snake data
+	int offset = 0;
+	buf[offset++] = MSG_GAME_STATE;
+	
+	// get the number of snakes alive
+	int snakes_alive = 0;
+	for(int i=0; i<MAX_PLAYERS; i++) {
+		if(board->snakes[i].alive) {
+			snakes_alive++;
+		}
+	}
+	buf[offset++] = (uint8_t)snakes_alive;
+
+	// get the x and y position [big endian uint16] of the apple
+    uint16_t apple_x = htons((uint16_t)board->apple.x);
+    uint16_t apple_y = htons((uint16_t)board->apple.y);
+
+	// copy into buffer
+    memcpy(&buf[offset], &apple_x, 2);
+    offset += 2;
+    memcpy(&buf[offset], &apple_y, 2);
+    offset += 2;
+
+    // for each snake alive, save the snake data -> each 4+(length*4) bytes
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (board->snakes[i].alive) {
+            const snake_t *snake = &board->snakes[i];
+
+            // make sure there is enough space in the buffer -> error if too big
+            if ((size_t)offset + 4 + (snake->length * 4) > buf_len) {
+                return -1;
+            }
+
+			// 0 = snake id (1 byte)
+            buf[offset++] = (uint8_t)snake->id;
+
+			// 1 = snake length (2 bytes)
+            uint16_t length = htons((uint16_t)snake->length);
+            memcpy(&buf[offset], &length, 2);
+            offset += 2;
+
+			// 3 = direction (1 byte)
+            buf[offset++] = (uint8_t)snake->direction;
+
+            // 4 = body segments, length pairs of (x,y), head first
+            for (int j = 0; j < snake->length; j++) {
+				// get the x and y position [big endian uint16] of body
+                uint16_t x = htons((uint16_t)snake->body[j].x);
+                uint16_t y = htons((uint16_t)snake->body[j].y);
+                
+				// copy to buffer
+				memcpy(&buf[offset], &x, 2);
+                offset += 2;
+                memcpy(&buf[offset], &y, 2);
+                offset += 2;
+            }
+        }
+    }
+
+	// return the total number of bytes in the buffer
+	return offset + 1;
 }
 
 int protocol_serialize_dead(uint8_t *buf, size_t buf_len, int player_id) {
