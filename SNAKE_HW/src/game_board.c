@@ -233,6 +233,17 @@ int board_remove_snake(game_board_t *board, int snake_id) {
 }
 
 int board_tick(game_board_t *board) {
-	(void)board;
+	// null pointer
+	if(!board) {
+		return -1;
+	}
+
+	// iterates through all snakes in order of ID (0 through MAX_PLAYERS - 1) + for each alive snake, calls snake_advance()
+	for(int i=0; i<MAX_PLAYERS; i++) {
+		if(board->snakes[i].alive == 1) {
+			snake_advance(board, i);
+		}
+	}
+	
 	return 0;
 }
