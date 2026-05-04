@@ -139,9 +139,24 @@ int protocol_serialize_error(uint8_t *buf, size_t buf_len, uint8_t error_code) {
 }
 
 int protocol_deserialize_client_msg(const uint8_t *buf, size_t buf_len, uint8_t *out_type, uint8_t *out_payload) {
-	(void)buf;
-	(void)buf_len;
-	(void)out_type;
-	(void)out_payload;
-	return 0;
+	// null pointers, buffer too small
+	if(!buf || !out_type || !out_payload || buf_len < 2) {
+		return -1;
+	}
+
+	// get type and payload from the buffer
+	uint8_t type = buf[0];
+    uint8_t payload = buf[1];
+
+    // validate the message type -> type should be JOIN, DIRECTION, or LEAVE -> error if not any of these
+    if (type != MSG_JOIN && type != MSG_DIRECTION && type != MSG_LEAVE) {
+        return -1;
+    }
+
+	// save type and payload to pointers
+    *out_type = type;
+    *out_payload = payload;
+
+	// return 0 on success
+    return 0;
 }
