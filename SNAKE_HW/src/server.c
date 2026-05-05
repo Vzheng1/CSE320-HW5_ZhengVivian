@@ -142,13 +142,166 @@ void *server_game_loop(void *arg) {
 	return NULL;
 }
 
+// client handler thread function -> on instance runs per connected client
+// need to define a struct to pass server pointer + client fd to this function since pthread_create only takes one void* 
 void *server_client_handler(void *arg) {
-	(void)arg;
-	return NULL;
+	// get client handler from arg + check if valid
+	client_handler_arg_t *client_handler = (client_handler_arg_t *)arg;
+	if(!client_handler) {
+		return NULL;
+	}
+
+	// get server and client_fd from client handler 
+	server_t *server = client_handler->server;
+	int client_fd = client_handler->client_fd;
+	int snake_id = -1;
+	int client_slot = -1;
+
+	// (1) wait for JOIN message from client
+	// create buffer to receive message
+	uint8_t msg_buf[CLIENT_MSG_SIZE];
+    if (recv_exact(client_fd, msg_buf, CLIENT_MSG_SIZE) < 0) {
+        goto cleanup;
+    }
+
+	// deserialize the client message to get the type and payload
+    uint8_t msg_type, msg_payload;
+    if (protocol_deserialize_client_msg(msg_buf, CLIENT_MSG_SIZE, &msg_type, &msg_payload) < 0) {
+        uint8_t err_msg[2];
+        protocol_serialize_error(err_msg, sizeof(err_msg), ERR_INVALID_MSG);
+        send_all(client_fd, err_msg, 2);
+        goto cleanup;
+    }
+
+	// (1a) if first message is NOT JOIN, send ERR_INVALID_MSG 0x03 + close
+    if (msg_type != MSG_JOIN) {
+        uint8_t err_msg[2];
+        protocol_serialize_error(err_msg, sizeof(err_msg), ERR_INVALID_MSG);
+        send_all(client_fd, err_msg, 2);
+        goto cleanup;
+    }
+
+	// (2) add player's snake to game board BUT if board is full, send ERR_GAME_FULL 0x01 + close
+	pthread_mutex_lock(&server->board_mutex);
+    if (board_add_snake(&server->board, &snake_id) < 0) {
+        pthread_mutex_unlock(&server->board_mutex);
+        uint8_t err_msg[2];
+        protocol_serialize_error(err_msg, sizeof(err_msg), ERR_GAME_FULL);
+        send_all(client_fd, err_msg, 2);
+        goto cleanup;
+    }
+    pthread_mutex_unlock(&server->board_mutex);
+
+	// (3) send WELCOME message with assigned player id, board size, max players
+	uint8_t welcome_msg[4];
+    protocol_serialize_welcome(welcome_msg, sizeof(welcome_msg), snake_id, server->board.size, server->board.max_snakes);
+    if (send_all(client_fd, welcome_msg, 4) < 0) {
+        goto cleanup;
+    }
+
+	// (4) register client fd + snake id in client_fds and client_snake_ids arrays
+	for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (server->client_fds[i] < 0) {
+            client_slot = i;
+            server->client_fds[i] = client_fd;
+            server->client_snake_ids[i] = snake_id;
+            break;
+        }
+    }
+
+	// (5) enter loop reading 2 byte messages from client socket:
+	while(server->running) {
+		// 5d. if recv() returns 0 or error -> client disconnect, break out of loop
+		if (recv_exact(client_fd, msg_buf, CLIENT_MSG_SIZE) < 0) {
+            break;
+        }
+
+		// 5c. invalid messages -> send ERR_INVALID_MSG 0x03
+		if (protocol_deserialize_client_msg(msg_buf, CLIENT_MSG_SIZE, &msg_type, &msg_payload) < 0) {
+            uint8_t err_msg[2];
+            protocol_serialize_error(err_msg, sizeof(err_msg), ERR_INVALID_MSG);
+            send_all(client_fd, err_msg, 2);
+            continue;
+        }
+
+		// 5a. DIRECTION -> update players direction
+		if (msg_type == MSG_DIRECTION) {
+            pthread_mutex_lock(&server->board_mutex);
+            snake_set_direction(&server->board.snakes[snake_id], (direction_t)msg_payload);
+            pthread_mutex_unlock(&server->board_mutex);
+
+		// 5b. LEAVE -> break loop
+        } else if (msg_type == MSG_LEAVE) {
+            break;
+        }
+	}
+	
+	cleanup:
+		// (6) on exit, leave/disconnext -> remove player's snake from game board
+		pthread_mutex_lock(&server->board_mutex);
+		board_remove_snake(&server->board, snake_id);
+		pthread_mutex_unlock(&server->board_mutex);
+
+		// (7) cleanup: clear client_fds and client_snake_ids entries to -1
+		if (client_slot >= 0) {
+			server->client_fds[client_slot] = -1;
+			server->client_snake_ids[client_slot] = -1;
+		}
+
+		// (8) cleanup: close client socket + free argument struct
+		close(client_fd);
+		free(client_handler);
+
+		return NULL;
 }
 
+// main server loop
 int server_start(server_t *server) {
-	(void)server;
+	// null pointer -> error
+	if(!server) {
+		return -1;
+	}
+
+	// (1) creates game loop thread -> calls pthread_create with server_game_loop + check for error
+	pthread_t game_loop_thread;
+    if (pthread_create(&game_loop_thread, NULL, server_game_loop, server) < 0) {
+        return -1;
+    }
+
+	// (2) enters accept() loop -> break loop when server->running becomes 0:
+	while(server->running) {
+		//	2a. accepts new client connection
+		//	2b. allocates new argument struct with server pointer + new client fd
+		struct sockaddr_in client_addr;
+        socklen_t addr_len = sizeof(client_addr);
+
+		int client_fd = accept(server->listen_fd, (struct sockaddr *)&client_addr,
+                               &addr_len);
+        if (client_fd < 0) {
+            break; 
+        }
+
+		//	2c. creates new detatched thread -> call pthread_create with server_client_handler
+		client_handler_arg_t *arg = (client_handler_arg_t *)malloc(sizeof(client_handler_arg_t));
+        if (!arg) {
+            close(client_fd);
+            continue;
+        }
+
+        arg->server = server;
+        arg->client_fd = client_fd;
+
+        pthread_t client_thread;
+        if (pthread_create(&client_thread, NULL, server_client_handler, arg) < 0) {
+            free(arg);
+            close(client_fd);
+            continue;
+        }
+
+		// 	2d. thread should be created detached (pthread_detach) so resources auto freeed when it exits
+		pthread_detach(client_thread);
+	}
+	
 	return 0;
 }
 
