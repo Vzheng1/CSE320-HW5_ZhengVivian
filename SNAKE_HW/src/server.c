@@ -19,12 +19,12 @@ int server_init(server_t *server, int port, int board_size, int max_snakes, unsi
 		return -1;
 	}
 
+	server->listen_fd = -1;
+
 	// create listening socket + bind to specific port + call listen()
 	// create listening socket
 	server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if(server->listen_fd != 0) {
-		pthread_mutex_destroy(&server->board_mutex);
-        board_free(&server->board);
+	if(server->listen_fd < 0) {
         return -1;
 	}
 
@@ -32,8 +32,7 @@ int server_init(server_t *server, int port, int board_size, int max_snakes, unsi
     int reuse = 1;
     if (setsockopt(server->listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
         close(server->listen_fd);
-        pthread_mutex_destroy(&server->board_mutex);
-        board_free(&server->board);
+		server->listen_fd = -1;
         return -1;
     }
 
@@ -45,27 +44,29 @@ int server_init(server_t *server, int port, int board_size, int max_snakes, unsi
 
     if (bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(server->listen_fd);
-        pthread_mutex_destroy(&server->board_mutex);
-        board_free(&server->board);
+		server->listen_fd = -1;
         return -1;
     }
 
     // call listen() on listen_fd
     if (listen(server->listen_fd, 8) < 0) {
         close(server->listen_fd);
-        pthread_mutex_destroy(&server->board_mutex);
-        board_free(&server->board);
+		server->listen_fd = -1;
         return -1;
     }
 
 	// initialize board
 	if(board_init(&server->board, board_size, max_snakes, seed) != 0) {
+		close(server->listen_fd);
+		server->listen_fd = -1;
 		return -1;
 	}
 
 	// initialize board mutex
 	if(pthread_mutex_init(&server->board_mutex, NULL) != 0) {
 		board_free(&server->board);
+		close(server->listen_fd);
+		server->listen_fd = -1;
 		return -1;
 	}
 
