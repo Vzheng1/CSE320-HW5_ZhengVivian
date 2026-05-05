@@ -86,7 +86,33 @@ int server_start(server_t *server) {
 }
 
 void server_cleanup(server_t *server) { 
-    (void)server;
+    // null pointer
+	if(!server) {
+		return;
+	}
+
+	// shut down server -> set to 0
+	server->running = 0;
+
+	// close client sockets
+	for(int i=0; i<MAX_PLAYERS; i++) {
+		if(server->client_fds[i] >= 0) {
+			close(server->client_fds[i]);
+			server->client_fds[i] = -1;
+		}
+	}
+
+	// close listening socket
+	if(server->listen_fd >= 0) {
+		close(server->listen_fd);
+		server->listen_fd = -1;
+	}
+
+	// free board
+	board_free(&server->board);
+
+	// destory the mutex
+	pthread_mutex_destroy(&server->board_mutex);
 }
 
 int recv_exact(int fd, uint8_t *buf, size_t len) {
