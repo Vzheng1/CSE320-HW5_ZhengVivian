@@ -25,7 +25,7 @@ int snake_set_direction(snake_t *snake, direction_t dir) {
 
 int snake_advance(struct game_board *board, int snake_id) {
 	// null pointers, invalid inputs
-	if(!board || snake_id < 0 || snake_id > MAX_PLAYERS) {
+	if(!board || snake_id < 0 || snake_id >= MAX_PLAYERS) {
 		return -1;
 	}
 
@@ -70,6 +70,10 @@ int snake_advance(struct game_board *board, int snake_id) {
 	// (3) check what is at the new head positio
 	cell_t new_cell = board->cells[new_head.y * board->size + new_head.x];
 
+	if (new_head.x < 0 || new_head.x >= board->size || new_head.y < 0 || new_head.y >= board->size) {
+		board_remove_snake(board, snake_id);
+		return 1;
+	}
 	//	a. CELL_WALL or CELL_SNAKE_* (any snake, including itself): 
 	//		- snake dies -> board_remove_snake() -> return 1 [death]
 	if(new_cell == CELL_WALL || (new_cell >= CELL_SNAKE_0 && new_cell <= CELL_SNAKE_7)) {
@@ -83,9 +87,9 @@ int snake_advance(struct game_board *board, int snake_id) {
 	//		- return 2 [apple eaten]
 	if(new_cell == CELL_APPLE) {
 		// move body forward -> shift all segments down by one in body array forward then place new head at body[0]
-        for (int i = snake->length - 1; i > 0; i--) {
-            snake->body[i] = snake->body[i - 1];
-        }
+		for (int i = snake->length - 1; i > 0; i--) {
+			snake->body[i] = snake->body[i - 1];
+		}
         snake->body[0] = new_head;
 
         // set cell to snake's cell value
