@@ -145,8 +145,6 @@ void *server_game_loop(void *arg) {
 		uint8_t game_state_buf[GAME_STATE_BUF_SIZE];
 		int game_state_len = protocol_serialize_game_state(game_state_buf, sizeof(game_state_buf), &server->board);
 
-        server->board.num_snakes, game_state_len);
-
 		// (5) broadcast serialzied game state to ALL connected clients -> iterate through client_fds + call send() for each valid fd
 		if(game_state_len > 0) {
 			for(int i=0; i<MAX_PLAYERS; i++) {
