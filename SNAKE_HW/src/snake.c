@@ -2,6 +2,8 @@
 #include "game_board.h"
 #include "server.h"
 
+#include <stdio.h>
+
 int snake_set_direction(snake_t *snake, direction_t dir) {
 	// NULL pointer + invalid direction value
 	if(!snake || dir < 0 || dir > 3) {
@@ -31,7 +33,7 @@ int snake_advance(struct game_board *board, int snake_id) {
 
 	// get snake and check it is alive
 	snake_t *snake = &board->snakes[snake_id];
-	if(!snake || snake->alive != 1) {
+	if(!snake->alive) {
 		return -1;
 	}
 	
@@ -68,12 +70,12 @@ int snake_advance(struct game_board *board, int snake_id) {
 	}
 	
 	// (3) check what is at the new head positio
-	cell_t new_cell = board->cells[new_head.y * board->size + new_head.x];
-
 	if (new_head.x < 0 || new_head.x >= board->size || new_head.y < 0 || new_head.y >= board->size) {
 		board_remove_snake(board, snake_id);
 		return 1;
 	}
+	cell_t new_cell = board->cells[new_head.y * board->size + new_head.x];
+
 	//	a. CELL_WALL or CELL_SNAKE_* (any snake, including itself): 
 	//		- snake dies -> board_remove_snake() -> return 1 [death]
 	if(new_cell == CELL_WALL || (new_cell >= CELL_SNAKE_0 && new_cell <= CELL_SNAKE_7)) {

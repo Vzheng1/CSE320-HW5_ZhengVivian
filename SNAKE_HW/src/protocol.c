@@ -93,7 +93,7 @@ int protocol_serialize_game_state(uint8_t *buf, size_t buf_len, const game_board
     }
 
 	// return the total number of bytes in the buffer
-	return offset + 1;
+	return offset;
 }
 
 int protocol_serialize_dead(uint8_t *buf, size_t buf_len, int player_id) {

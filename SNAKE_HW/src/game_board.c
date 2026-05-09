@@ -200,20 +200,19 @@ int board_add_snake(game_board_t *board, int *out_id) {
 
 	// (6) store asisgned ID in *out_id + increment board->num_snakes
 	*out_id = snake_id;
-    board->num_snakes++;
-
+	board->num_snakes++;
 	return 0;
 }
 
 int board_remove_snake(game_board_t *board, int snake_id) {
 	// invalid inputs -> return -1
-	if(!board || snake_id < 0 || snake_id > MAX_PLAYERS) {
+	if(!board || snake_id < 0 || snake_id >= MAX_PLAYERS) {
 		return -1;
 	}
 
 	// get snake and check if the snake is alive -> if not, return -1
 	snake_t *snake = &board->snakes[snake_id];
-	if(!snake || snake->alive != 1) {
+	if(!snake || !snake->alive) {
 		return -1;
 	}
 

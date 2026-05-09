@@ -12,6 +12,20 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
+#include <errno.h>
+#include <stdio.h>
+
+static server_t *global_server = NULL;
+
+static void sigint_handler(int sig) {
+    (void)sig;
+    if (global_server) {
+        global_server->running = 0;
+        if (global_server->listen_fd >= 0) {
+            close(global_server->listen_fd);
+        }
+    }
+}
 
 int server_init(server_t *server, int port, int board_size, int max_snakes, unsigned int seed) {
 	// null pointer
@@ -78,6 +92,9 @@ int server_init(server_t *server, int port, int board_size, int max_snakes, unsi
 
 	// initialize server state
 	server->running = 1;
+	global_server = server;
+
+	signal(SIGINT, sigint_handler);
 
 	return 0;
 }
@@ -93,7 +110,7 @@ void *server_game_loop(void *arg) {
 	// loop -> function exit when server->running is set to 0 :
 	while(server->running) {
 		// (1) sleep for TICK_INTERVAL_MS ms (default 200ms) -> use usleep(TICK_INTERVAL_MS * 1000)
-		usleep(TICK_INTERVAL_MS);
+		usleep(TICK_INTERVAL_MS * 1000);
 		// lock mutex since on its own thread
 		pthread_mutex_lock(&server->board_mutex);
 
@@ -110,14 +127,15 @@ void *server_game_loop(void *arg) {
 		for(int i=0; i<MAX_PLAYERS; i++) {
 			// if snack has just died, send PLAYER_DEAD message
 			if(alive_before_tick[i] && !server->board.snakes[i].alive) {
+
 				// iterate through snake ids and client fds to send message
 				for(int j=0; j<MAX_PLAYERS; j++) {
 					//
-					if(server->client_snake_ids[j] == i) {
+					if(server->client_snake_ids[j] == i && server->client_fds[j] >= 0) {         
 						uint8_t dead_msg[2];
                         protocol_serialize_dead(dead_msg, sizeof(dead_msg), i);
-                        send_all(server->client_fds[j], dead_msg, 2);
-                        break;
+						send_all(server->client_fds[j], dead_msg, 2);
+						break;
 					}
 				}
 			}
@@ -126,6 +144,8 @@ void *server_game_loop(void *arg) {
 		// (4) serialize game state with protocol_serialize_game_state()
 		uint8_t game_state_buf[GAME_STATE_BUF_SIZE];
 		int game_state_len = protocol_serialize_game_state(game_state_buf, sizeof(game_state_buf), &server->board);
+
+        server->board.num_snakes, game_state_len);
 
 		// (5) broadcast serialzied game state to ALL connected clients -> iterate through client_fds + call send() for each valid fd
 		if(game_state_len > 0) {
@@ -191,7 +211,7 @@ void *server_client_handler(void *arg) {
         send_all(client_fd, err_msg, 2);
         goto cleanup;
     }
-    pthread_mutex_unlock(&server->board_mutex);
+	pthread_mutex_unlock(&server->board_mutex);
 
 	// (3) send WELCOME message with assigned player id, board size, max players
 	uint8_t welcome_msg[4];
@@ -209,6 +229,17 @@ void *server_client_handler(void *arg) {
             break;
         }
     }
+
+	// If no client slot was available (shouldn't normally happen), remove snake and reject
+	if (client_slot < 0) {
+		pthread_mutex_lock(&server->board_mutex);
+		board_remove_snake(&server->board, snake_id);
+		pthread_mutex_unlock(&server->board_mutex);
+		uint8_t err_msg[2];
+		protocol_serialize_error(err_msg, sizeof(err_msg), ERR_GAME_FULL);
+		send_all(client_fd, err_msg, 2);
+		goto cleanup;
+	}
 
 	// (5) enter loop reading 2 byte messages from client socket:
 	while(server->running) {
@@ -228,7 +259,12 @@ void *server_client_handler(void *arg) {
 		// 5a. DIRECTION -> update players direction
 		if (msg_type == MSG_DIRECTION) {
             pthread_mutex_lock(&server->board_mutex);
-            snake_set_direction(&server->board.snakes[snake_id], (direction_t)msg_payload);
+
+			// only accept direction input if the snake is alive -> if snake is dead, ignore input
+			if (server->board.snakes[snake_id].alive) {
+				snake_set_direction(&server->board.snakes[snake_id], (direction_t)msg_payload);
+			}
+
             pthread_mutex_unlock(&server->board_mutex);
 
 		// 5b. LEAVE -> break loop
@@ -239,9 +275,11 @@ void *server_client_handler(void *arg) {
 	
 	cleanup:
 		// (6) on exit, leave/disconnext -> remove player's snake from game board
-		pthread_mutex_lock(&server->board_mutex);
-		board_remove_snake(&server->board, snake_id);
-		pthread_mutex_unlock(&server->board_mutex);
+		if (snake_id >= 0) {
+			pthread_mutex_lock(&server->board_mutex);
+			board_remove_snake(&server->board, snake_id);
+			pthread_mutex_unlock(&server->board_mutex);
+		}
 
 		// (7) cleanup: clear client_fds and client_snake_ids entries to -1
 		if (client_slot >= 0) {
@@ -281,6 +319,18 @@ int server_start(server_t *server) {
         if (client_fd < 0) {
             break; 
         }
+
+		// If the board is already full (max_snakes reached), reject connection early
+		pthread_mutex_lock(&server->board_mutex);
+		if (server->board.num_snakes >= server->board.max_snakes) {
+			pthread_mutex_unlock(&server->board_mutex);
+			uint8_t err_msg[2];
+			protocol_serialize_error(err_msg, sizeof(err_msg), ERR_GAME_FULL);
+			send_all(client_fd, err_msg, 2);
+			close(client_fd);
+			continue;
+		}
+		pthread_mutex_unlock(&server->board_mutex);
 
 		//	2c. creates new detatched thread -> call pthread_create with server_client_handler
 		client_handler_arg_t *arg = (client_handler_arg_t *)malloc(sizeof(client_handler_arg_t));
