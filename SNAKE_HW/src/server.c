@@ -219,14 +219,16 @@ void *server_client_handler(void *arg) {
     }
 
 	// (4) register client fd + snake id in client_fds and client_snake_ids arrays
+	pthread_mutex_lock(&server->board_mutex);
 	for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (server->client_fds[i] < 0) {
-            client_slot = i;
-            server->client_fds[i] = client_fd;
-            server->client_snake_ids[i] = snake_id;
-            break;
-        }
-    }
+		if (server->client_fds[i] < 0) {
+			client_slot = i;
+			server->client_fds[i] = client_fd;
+			server->client_snake_ids[i] = snake_id;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&server->board_mutex);
 
 	// If no client slot was available (shouldn't normally happen), remove snake and reject
 	if (client_slot < 0) {
@@ -256,11 +258,22 @@ void *server_client_handler(void *arg) {
 
 		// 5a. DIRECTION -> update players direction
 		if (msg_type == MSG_DIRECTION) {
+			if (msg_payload > DIR_RIGHT) {
+				uint8_t err_msg[2];
+				protocol_serialize_error(err_msg, sizeof(err_msg), ERR_INVALID_MSG);
+				send_all(client_fd, err_msg, 2);
+				continue;
+			}
+
             pthread_mutex_lock(&server->board_mutex);
 
 			// only accept direction input if the snake is alive -> if snake is dead, ignore input
 			if (server->board.snakes[snake_id].alive) {
-				snake_set_direction(&server->board.snakes[snake_id], (direction_t)msg_payload);
+				if (snake_set_direction(&server->board.snakes[snake_id], (direction_t)msg_payload) < 0) {
+					uint8_t err_msg[2];
+					protocol_serialize_error(err_msg, sizeof(err_msg), ERR_INVALID_MSG);
+					send_all(client_fd, err_msg, 2);
+				}
 			}
 
             pthread_mutex_unlock(&server->board_mutex);
@@ -281,8 +294,10 @@ void *server_client_handler(void *arg) {
 
 		// (7) cleanup: clear client_fds and client_snake_ids entries to -1
 		if (client_slot >= 0) {
+			pthread_mutex_lock(&server->board_mutex);
 			server->client_fds[client_slot] = -1;
 			server->client_snake_ids[client_slot] = -1;
+			pthread_mutex_unlock(&server->board_mutex);
 		}
 
 		// (8) cleanup: close client socket + free argument struct
